@@ -11,6 +11,37 @@ from scipy.ndimage import rotate
 from PIL import Image
 from scipy import signal
 
+class CircularBuffer( object ):
+    def __init__(self, df):
+        self.df = df
+        self.header = pyfits.getheader(df)
+        self.data = pyfits.getdata(df)
+        self.columns = self.data.columns
+        self.Intensities = self.data.field('Intensities')
+        self.Gradients = self.data.field('Gradients')
+        self.HODM = self.data.field('HODM_Positions')
+        self.TTM = self.data.field('ITTM_Positions')
+
+class Controller( object ):
+    def __init__(self, CM = None, iTT2HO=None, TT2HO=None):
+        self.CM = pyfits.getdata(CM)
+        self.HOCM = self.CM[:60,:]
+        self.TTCM = self.CM[60:,:]
+        self.iTT2HO = pyfits.getdata(iTT2HO)
+        self.TT2HO = pyfits.getdata(TT2HO)
+
+    def computeDeltas(self, slopes):
+        return self.HOCM.dot(slopes)
+
+class LoopAnalyzer( object):
+    def __init__(self, HOCtr=None, CB =None):
+        self.HOCtr = HOCtr
+        self.CB = CB
+        self.predictions = []
+
+    def predict(self):
+        for frame, mirror in zip(self.CB.Gradients, self.CB.HODM):
+            self.predictions.append(mirror-self.HOCtr.computeDeltas(frame))
 
 class FLIRCamImage( object ):
     def __init__(self, df):
@@ -361,18 +392,21 @@ class NGCImage( object):
         self.xc = numpy.array(xc)
         self.yc = numpy.array(yc)
 
-        self.residual_x = self.xc % 1
-        self.residual_y = self.yc % 1
+        #self.residual_x = self.xc % 1
+        #self.residual_y = self.yc % 1
 
-        self.residual_x[self.residual_x > 0.5] -= 1.0
-        self.residual_y[self.residual_y > 0.5] -= 1.0
+        #self.residual_x[self.residual_x > 0.5] -= 1.0
+        #self.residual_y[self.residual_y > 0.5] -= 1.0
 
 
     def fit_line(self, x, y):
         fitfunc = lambda p, x : p[0]+(x*p[1])
         errfunc = lambda p, x, y: numpy.abs(fitfunc(p,x) - y)
         coeffs = [numpy.mean(y), 0.1]
-        pfit = optimize.leastsq(errfunc, coeffs, args=(x,y) )
+        order = numpy.argsort(x)
+        middle_x = numpy.array(x)[order[1:-1]]
+        middle_y = numpy.array(y)[order[1:-1]]
+        pfit = optimize.leastsq(errfunc, coeffs, args=(middle_x,middle_y) )
 
         #return numpy.arctan(numpy.abs(pfit[0][1]))*180.0/3.14159262
         return pfit
@@ -380,28 +414,36 @@ class NGCImage( object):
 
     def findAngles(self, ax = None):
         xangle = []
+        residuals_x = []
         for x in self.xcenters:
             selected = numpy.abs(self.xc - x) < 2.0
             fit = self.fit_line(self.yc[selected], self.xc[selected])
             if not(ax == None):
-                ax.plot(fit[0][0]+fit[0][1]*self.yc[selected], self.yc[selected], color = 'r')
-            #differences.append(fit[0][0]+fit[0][1]*yc[col] - xc[col])
+                ax.plot(fit[0][0]+fit[0][1]*self.yc[selected], 
+                        self.yc[selected], color = 'r')
+            residuals_x.append(numpy.array([self.yc[selected], 
+                fit[0][0]+fit[0][1]*self.yc[selected] - self.xc[selected]]))
             xangle.append(numpy.arctan(fit[0][1])*180.0/3.14159)
 
         yangle = []
+        residuals_y = []
         for y in self.ycenters:
             selected = numpy.abs(self.yc - y) < 2.0
             fit = self.fit_line(self.xc[selected], self.yc[selected])
             if not(ax == None):
-                ax.plot(self.xc[selected], fit[0][0]+fit[0][1]*self.xc[selected], color = 'r')
-            #differences.append(fit[0][0]+fit[0][1]*yc[col] - xc[col])
-            yangle.append(numpy.arctan(fit[0][1])*180.0/3.14159)
+                ax.plot(self.xc[selected], fit[0][0]+fit[0][1]*self.xc[selected],
+                        color = 'r')
+            residuals_y.append(numpy.array([self.xc[selected], 
+                fit[0][0]+fit[0][1]*self.xc[selected] - self.yc[selected]]))
+            yangle.append(-numpy.arctan(fit[0][1])*180.0/3.14159)
 
         if not(ax==None):
             ax.scatter(self.xc, self.yc, s=10, c='r')
 
         self.xangle = xangle
         self.yangle = yangle
+        self.residuals_x = residuals_x
+        self.residuals_y = residuals_y
 
     
 
